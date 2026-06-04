@@ -1,0 +1,9 @@
+node_modules/
+client/dist/
+frp_bin/*
+!frp_bin/versions.json
+packages/
+uploads_tmp/
+server_connections/
+users.json
+config_schemas/*/
