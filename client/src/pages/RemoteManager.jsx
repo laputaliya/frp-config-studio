@@ -12,9 +12,13 @@ export default function RemoteManager() {
   const [proxies, setProxies] = useState([]);
   const [clients, setClients] = useState([]);
   const [clientDetail, setClientDetail] = useState(null);
+  const [proxyDetail, setProxyDetail] = useState(null);
+  const [proxyLoading, setProxyLoading] = useState(false);
+  const [trafficData, setTrafficData] = useState(null);
   const [section, setSection] = useState('overview');
   const [loading, setLoading] = useState(false);
   const [refreshing, setRefreshing] = useState(false);
+  const [refreshKey, setRefreshKey] = useState(0);
   const { showToast } = useToast();
 
   const fetchConnections = useCallback(async () => {
@@ -50,7 +54,7 @@ export default function RemoteManager() {
     load();
     const timer = setInterval(load, 10000);
     return () => clearInterval(timer);
-  }, [activeConn, showToast]);
+  }, [activeConn, showToast, refreshKey]);
 
   const handleReload = async () => {
     const resp = await apiFetch(`${API}/${encodeURIComponent(activeConn.id)}/reload`);
@@ -58,13 +62,46 @@ export default function RemoteManager() {
     showToast(data.error || '配置已重载', data.error ? 'error' : 'success');
   };
 
+  // 客户端关联代理（由 handleClientDetail 填充）
+  const [clientProxies, setClientProxies] = useState([]);
+
   const handleClientDetail = async (clientKey) => {
-    setClientDetail(null);
+    setClientDetail(null); setProxyDetail(null); setClientProxies([]);
     try {
-      const resp = await apiFetch(`${API}/${encodeURIComponent(activeConn.id)}/clients/${encodeURIComponent(clientKey)}`);
-      const data = await resp.json();
-      if (data.error) showToast(data.error, 'error'); else setClientDetail(data);
+      const [detailResp, proxiesResp] = await Promise.all([
+        apiFetch(`${API}/${encodeURIComponent(activeConn.id)}/clients/${encodeURIComponent(clientKey)}`),
+        apiFetch(`${API}/${encodeURIComponent(activeConn.id)}/clients/${encodeURIComponent(clientKey)}/proxies`),
+      ]);
+      const detail = await detailResp.json();
+      const proxyData = await proxiesResp.json();
+      if (detail.error) showToast(detail.error, 'error'); else { setClientDetail(detail); setSection('clients'); }
+      if (!proxyData.error) setClientProxies(proxyData.proxies || []);
     } catch (e) { showToast('获取详情失败', 'error'); }
+  };
+
+  const handleProxyDetail = async (proxy, switchTab) => {
+    if (switchTab) setSection('proxies');
+    setProxyDetail(null); setProxyLoading(true); setTrafficData(null);
+    try {
+      const [detailResp, trafficResp] = await Promise.all([
+        apiFetch(`${API}/${encodeURIComponent(activeConn.id)}/proxy/${proxy.type || 'tcp'}/${encodeURIComponent(proxy.name)}`),
+        apiFetch(`${API}/${encodeURIComponent(activeConn.id)}/traffic/${encodeURIComponent(proxy.name)}`),
+      ]);
+      const detail = await detailResp.json();
+      const traffic = await trafficResp.json();
+      if (detail.error) showToast(detail.error, 'error'); else setProxyDetail(detail);
+      if (!traffic.error) {
+        // FRP traffic 格式：{ name, trafficIn: [n,n,...], trafficOut: [n,n,...] }
+        const inArr = traffic.trafficIn || [];
+        const outArr = traffic.trafficOut || [];
+        const list = inArr.map((v, i) => ({
+          index: i, total: inArr.length,
+          in: v, out: (outArr[i] || 0),
+        }));
+        setTrafficData({ ...traffic, _list: list });
+      }
+    } catch (e) { showToast('获取代理详情失败', 'error'); }
+    finally { setProxyLoading(false); }
   };
 
   const formatBytes = (b) => {
@@ -100,7 +137,7 @@ export default function RemoteManager() {
             ) : (
               connections.map((c) => (
                 <div key={c.id} className={`frp-sidebar-item ${activeConn?.id === c.id ? 'active' : ''}`}
-                  onClick={() => { setActiveConn(c); setSection('overview'); setClientDetail(null); }}>
+                  onClick={() => { setActiveConn(c); setSection('overview'); setClientDetail(null); setProxyDetail(null); }}>
                   <div className="dot" />
                   <div className="frp-sidebar-info">
                     <div className="frp-sidebar-name">{c.name}</div>
@@ -146,9 +183,14 @@ export default function RemoteManager() {
                       <small className="text-muted ms-1">{activeConn.addr}:{activeConn.port}</small>
                       {refreshing && <span className="spinner-border spinner-border-sm text-primary ms-2" />}
                     </div>
-                    <button className="frp-btn warning" onClick={handleReload}>
-                      <i className="bi bi-arrow-repeat"></i> 重载配置
-                    </button>
+                    <div className="d-flex gap-2">
+                      <button className="frp-btn" onClick={() => setRefreshKey((k) => k + 1)} disabled={refreshing}>
+                        <i className="bi bi-arrow-clockwise"></i> 刷新
+                      </button>
+                      <button className="frp-btn warning" onClick={handleReload}>
+                        <i className="bi bi-arrow-repeat"></i> 重载配置
+                      </button>
+                    </div>
                   </div>
 
                   {serverInfo && (
@@ -195,6 +237,9 @@ export default function RemoteManager() {
                   <div className="frp-panel-header">
                     <span>代理列表 <span className="count">{proxies.length}</span></span>
                     <div className="d-flex gap-1">
+                      <button className="frp-btn" style={{padding:'2px 8px',fontSize:11}} onClick={() => setRefreshKey((k) => k + 1)} disabled={refreshing}>
+                        <i className="bi bi-arrow-clockwise"></i> 刷新
+                      </button>
                       <button className={`frp-btn ${proxyFilter==='all'?'primary':''}`} style={{padding:'2px 10px',fontSize:12}} onClick={()=>setProxyFilter('all')}>全部</button>
                       {proxyTypes.filter(t=>typeCounts[t]).map(t=><button key={t} className={`frp-btn ${proxyFilter===t?'primary':''}`} style={{padding:'2px 10px',fontSize:12}} onClick={()=>setProxyFilter(t)}>{t} ({typeCounts[t]})</button>)}
                     </div>
@@ -202,14 +247,71 @@ export default function RemoteManager() {
                   <div className="frp-panel-body">
                     {filteredProxies.length===0 ? <div className="text-center py-4 text-muted small">暂无代理</div> :
                       <div className="table-responsive"><table className="frp-table"><thead><tr><th>名称</th><th>类型</th><th>本地地址</th><th>远程端口</th><th>今日流入</th><th>今日流出</th><th>状态</th></tr></thead><tbody>
-                        {filteredProxies.map((p,i)=><tr key={i}><td><strong>{p.name||'-'}</strong></td><td><span className="frp-badge type">{p.type||'tcp'}</span></td><td><code className="small">{p.local_ip||'-'}:{p.local_port||'-'}</code></td><td>{p.remote_port||'-'}</td><td className="text-success">{formatBytes(p.today_traffic_in)}</td><td className="text-danger">{formatBytes(p.today_traffic_out)}</td><td>{p.status==='online'||p.cur_conns>0?<span className="frp-badge online">在线({p.cur_conns})</span>:<span className="frp-badge offline">离线</span>}</td></tr>)}
+                        {filteredProxies.map((p,i)=><tr key={i} style={{cursor:'pointer'}} onClick={()=>handleProxyDetail(p)}><td><strong>{p.name||'-'}</strong></td><td><span className="frp-badge type">{p.type||'tcp'}</span></td><td><code className="small">{p.local_ip||'-'}:{p.local_port||'-'}</code></td><td>{p.remote_port||'-'}</td><td className="text-success">{formatBytes(p.today_traffic_in)}</td><td className="text-danger">{formatBytes(p.todayTrafficOut)}</td><td>{p.status==='online'||p.curConns>0?<span className="frp-badge online">在线({p.curConns})</span>:<span className="frp-badge offline">离线</span>}</td></tr>)}
                       </tbody></table></div>}
+                    {proxyDetail && (
+                      <div className="frp-detail-panel">
+                        <div className="header"><span>代理详情：{proxyDetail.name||proxyDetail.conf?.name||'-'}</span><button className="btn-close btn-close-white" style={{filter:'invert(0.3)'}} onClick={()=>{setProxyDetail(null);setTrafficData(null);}}/></div>
+                        <div className="frp-detail-grid">
+                          <div className="frp-detail-cell"><div className="label">名称</div><div className="value"><strong>{proxyDetail.name||proxyDetail.conf?.name||'-'}</strong></div></div>
+                          <div className="frp-detail-cell"><div className="label">类型</div><div className="value"><span className="frp-badge type">{proxyDetail.type||proxyDetail.conf?.type||'-'}</span></div></div>
+                          <div className="frp-detail-cell"><div className="label">状态</div><div className="value">{proxyDetail.status==='online'||proxyDetail.curConns>0?<span className="frp-badge online">在线({proxyDetail.curConns||0})</span>:<span className="frp-badge offline">离线</span>}</div></div>
+                          {proxyDetail.conf?.customDomains && <div className="frp-detail-cell"><div className="label">自定义域名</div><div className="value"><code className="small">{Array.isArray(proxyDetail.conf.customDomains)?proxyDetail.conf.customDomains.join(', '):proxyDetail.conf.customDomains}</code></div></div>}
+                          {proxyDetail.conf?.subdomain && <div className="frp-detail-cell"><div className="label">子域名</div><div className="value"><code className="small">{proxyDetail.conf.subdomain}</code></div></div>}
+                          <div className="frp-detail-cell"><div className="label">客户端 ID</div><div className="value"><code className="small">{proxyDetail.clientID||'-'}</code></div></div>
+                          <div className="frp-detail-cell"><div className="label">本地地址</div><div className="value"><code className="small">{proxyDetail.conf?.localIP||'-'}:{proxyDetail.conf?.localPort||'-'}</code></div></div>
+                          <div className="frp-detail-cell"><div className="label">今日流入</div><div className="value text-success"><strong>{formatBytes(proxyDetail.todayTrafficIn)}</strong></div></div>
+                          <div className="frp-detail-cell"><div className="label">今日流出</div><div className="value text-danger"><strong>{formatBytes(proxyDetail.todayTrafficOut)}</strong></div></div>
+                          <div className="frp-detail-cell"><div className="label">累计流入</div><div className="value text-success">{formatBytes(trafficData?._list?.reduce((s,t)=>s+t.in,0)||trafficData?.totalTrafficIn||trafficData?.total_traffic_in)}</div></div>
+                          <div className="frp-detail-cell"><div className="label">累计流出</div><div className="value text-danger">{formatBytes(trafficData?._list?.reduce((s,t)=>s+t.out,0)||trafficData?.totalTrafficOut||trafficData?.total_traffic_out)}</div></div>
+                          <div className="frp-detail-cell"><div className="label">当前连接</div><div className="value">{proxyDetail.curConns??'-'}</div></div>
+                          <div className="frp-detail-cell"><div className="label">上次启动</div><div className="value"><small>{proxyDetail.lastStartTime||proxyDetail.last_start_time||'-'}</small></div></div>
+                          <div className="frp-detail-cell"><div className="label">上次关闭</div><div className="value"><small>{proxyDetail.lastCloseTime||proxyDetail.last_close_time||'-'}</small></div></div>
+                        </div>
+                        {/* 流量跟踪 */}
+                        {trafficData && trafficData._list && trafficData._list.length > 0 && (() => {
+                          const rawData = [...trafficData._list].reverse(); // 反转：最新在前
+                          const maxVal = Math.max(...rawData.map((t) => Math.max(t.in, t.out)), 1);
+                          const dayLabels = ['今天','昨天','前天'];
+                          const total = rawData.length;
+                          return (
+                          <div className="p-3 border-top">
+                            <small className="fw-bold text-muted d-block mb-2">
+                              <i className="bi bi-graph-up me-1"></i>流量跟踪（近 {total} 天）
+                            </small>
+                            <div className="traffic-chart d-flex align-items-end mb-2" style={{height:130,padding:'0 4px',gap:2}}>
+                              {rawData.map((t,i)=>{
+                                const inH = Math.max((t.in/maxVal)*110, 2);
+                                const outH = Math.max((t.out/maxVal)*110, 2);
+                                const dayIdx = total - 1 - i;
+                                const label = dayIdx < 3 ? dayLabels[dayIdx] : `${dayIdx}天前`;
+                                const showLabel = total <= 10 || i % Math.ceil(total/8) === 0 || i === total-1 || dayIdx < 3;
+                                return <div key={i} className="d-flex flex-column align-items-center" style={{flex:1,minWidth:24}}
+                                  title={`${label}\n流入:${formatBytes(t.in)}\n流出:${formatBytes(t.out)}`}>
+                                  <div style={{display:'flex',gap:1,alignItems:'flex-end',height:110}}>
+                                    <div style={{width:8,height:inH,background:'#52c41a',borderRadius:'2px 2px 0 0',minWidth:6}}></div>
+                                    <div style={{width:8,height:outH,background:'#f5222d',borderRadius:'2px 2px 0 0',minWidth:6}}></div>
+                                  </div>
+                                  {showLabel && <small className="text-muted mt-1" style={{fontSize:9,whiteSpace:'nowrap'}}>{label}</small>}
+                                </div>;
+                              })}
+                            </div>
+                            <div className="d-flex justify-content-center gap-3 small">
+                              <span><span style={{display:'inline-block',width:10,height:10,background:'#52c41a',borderRadius:2,marginRight:4}}></span>流入</span>
+                              <span><span style={{display:'inline-block',width:10,height:10,background:'#f5222d',borderRadius:2,marginRight:4}}></span>流出</span>
+                              <span className="text-muted">峰值: {formatBytes(maxVal)}</span>
+                            </div>
+                          </div>
+                          );
+                        })()}
+                      </div>
+                    )}
                   </div>
                 </div>
               )}
 
               {section === 'clients' && (<>
-                <div className="frp-panel"><div className="frp-panel-header"><span>已连接客户端 <span className="count">{clients.length}</span></span></div><div className="frp-panel-body">
+                <div className="frp-panel"><div className="frp-panel-header"><span>已连接客户端 <span className="count">{clients.length}</span></span><button className="frp-btn" style={{padding:'2px 8px',fontSize:11}} onClick={() => setRefreshKey((k) => k + 1)} disabled={refreshing}><i className="bi bi-arrow-clockwise"></i> 刷新</button></div><div className="frp-panel-body">
                   {clients.length===0 ? <div className="text-center py-4 text-muted small">暂无客户端</div> :
                     <div className="table-responsive"><table className="frp-table"><thead><tr><th>客户端 ID</th><th>主机名</th><th>IP 地址</th><th>状态</th></tr></thead><tbody>
                       {clients.map((c,i)=><tr key={i} onClick={()=>handleClientDetail(c.key||c.clientID||c.id)}><td><strong>{c.clientID||c.id||'-'}</strong></td><td>{c.hostname||'-'}</td><td><code className="small">{c.clientIP||c.remote_addr||'-'}</code></td><td>{c.online?<span className="frp-badge online">在线</span>:<span className="frp-badge offline">离线</span>}</td></tr>)}
@@ -225,7 +327,17 @@ export default function RemoteManager() {
                   <div className="frp-detail-cell"><div className="label">首次连接</div><div className="value"><small>{formatTime(clientDetail.firstConnectedAt)}</small></div></div>
                   <div className="frp-detail-cell"><div className="label">最近连接</div><div className="value"><small>{formatTime(clientDetail.lastConnectedAt)}</small></div></div>
                   <div className="frp-detail-cell"><div className="label">状态</div><div className="value">{clientDetail.online?<span className="frp-badge online">在线</span>:<span className="frp-badge offline">离线</span>}</div></div>
-                </div></div>}
+                </div>
+                {clientProxies.length > 0 && (
+                  <div className="p-3 border-top">
+                    <small className="fw-bold text-muted d-block mb-2"><i className="bi bi-diagram-3 me-1"></i>关联代理 ({clientProxies.length})</small>
+                    <div className="table-responsive">
+                      <table className="frp-table mb-0"><thead><tr><th>名称</th><th>类型</th><th>远程端口</th><th>今日流入</th><th>今日流出</th><th>状态</th></tr></thead><tbody>
+                        {clientProxies.map((p,i)=><tr key={i} style={{cursor:'pointer'}} onClick={()=>handleProxyDetail(p,true)}><td><strong>{p.name||'-'}</strong></td><td><span className="frp-badge type">{p.type||'tcp'}</span></td><td>{p.remote_port||'-'}</td><td className="text-success">{formatBytes(p.today_traffic_in)}</td><td className="text-danger">{formatBytes(p.todayTrafficOut)}</td><td>{p.status==='online'||p.curConns>0?<span className="frp-badge online">在线({p.curConns})</span>:<span className="frp-badge offline">离线</span>}</td></tr>)}
+                      </tbody></table></div>
+                    </div>
+                  )}
+                </div>}
               </>)}
             </>
           )}

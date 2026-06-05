@@ -31,6 +31,7 @@ function createDefaultProxy(type = 'tcp', name = '') {
     remote_port: '',
     use_encryption: false,
     use_compression: false,
+    subdomain: '',
     custom_domains: '',
     locations: '',
     host_header_rewrite: '',
@@ -57,6 +58,7 @@ export default function ClientConfig({ onNavigate }) {
   // 关联服务端方案
   const [serverSchemas, setServerSchemas] = useState([]);
   const [linkedServerSchema, setLinkedServerSchema] = useState('');
+  const [linkedServerData, setLinkedServerData] = useState(null); // 完整服务端数据
 
   const debounceRef = useRef(null);
   const { showToast } = useToast();
@@ -101,15 +103,17 @@ export default function ClientConfig({ onNavigate }) {
     fetchServerSchemas();
   }, [fetchVersions, fetchSchemas, fetchServerSchemas]);
 
-  // 关联服务端方案 → 自动同步 server_addr、server_port、token
+  // 关联服务端方案 → 自动同步 server_addr、server_port、token、subdomainHost
   const handleLinkServerSchema = async (name) => {
     if (!name) {
       setLinkedServerSchema('');
+      setLinkedServerData(null);
       return;
     }
     try {
       const data = await loadServerSchema(name);
       setLinkedServerSchema(name);
+      setLinkedServerData(data);
       const nc = {
         ...common,
         server_addr: data.server_addr || common.server_addr,
@@ -179,8 +183,10 @@ export default function ClientConfig({ onNavigate }) {
       setCurrentSchema(name);
       setEditingName(name);
       if (data.version) setSelectedVersion(data.version);
-      if (data.linkedServer) setLinkedServerSchema(data.linkedServer);
-      else setLinkedServerSchema('');
+      if (data.linkedServer) {
+        setLinkedServerSchema(data.linkedServer);
+        try { const srvData = await loadServerSchema(data.linkedServer); setLinkedServerData(srvData); } catch (_) {}
+      } else { setLinkedServerSchema(''); setLinkedServerData(null); }
       updatePreview({ ...DEFAULT_COMMON, ...data.common }, data.proxies || [], data.version || selectedVersion);
     } catch (e) {
       showToast(e.message, 'error');
@@ -193,6 +199,7 @@ export default function ClientConfig({ onNavigate }) {
     setCurrentSchema(null);
     setEditingName('');
     setLinkedServerSchema('');
+    setLinkedServerData(null);
     setIniPreview('');
     if (versions.length > 0) {
       setSelectedPlatform(Object.keys(versions[0].platforms || {})[0] || '');
@@ -471,9 +478,27 @@ export default function ClientConfig({ onNavigate }) {
                         )}
                         {showHttpFields(proxy.type) && (
                           <>
+                            {linkedServerData?.subdomain_host && (
+                              <div className="col-6">
+                                <label className="form-label small mb-0">
+                                  子域名
+                                  <span className="text-muted ms-1">（.{linkedServerData.subdomain_host}）</span>
+                                </label>
+                                <div className="input-group input-group-sm">
+                                  <input type="text" className="form-control" placeholder={proxy.name || '子域名'}
+                                    value={proxy.subdomain || ''}
+                                    onChange={(e) => handleProxyChange(index, 'subdomain', e.target.value)} />
+                                  <button className="btn btn-outline-secondary" type="button" title="用代理名作为子域名"
+                                    onClick={() => handleProxyChange(index, 'subdomain', proxy.name || '')}>
+                                    <i className="bi bi-lightning"></i>
+                                  </button>
+                                </div>
+                                <small className="text-muted">最终访问: <strong>{proxy.subdomain || proxy.name || 'xxx'}.{linkedServerData.subdomain_host}</strong></small>
+                              </div>
+                            )}
                             <div className="col-6">
                               <label className="form-label small mb-0">自定义域名</label>
-                              <input type="text" className="form-control form-control-sm"
+                              <input type="text" className="form-control form-control-sm" placeholder="www.example.com"
                                 value={proxy.custom_domains}
                                 onChange={(e) => handleProxyChange(index, 'custom_domains', e.target.value)} />
                             </div>

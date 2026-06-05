@@ -1,158 +1,125 @@
 # 架构设计文档
 
-> **文档版本**：2.0
-> **最后更新**：2026-06-04
+> **文档版本**：2.1
+> **最后更新**：2026-06-05
 
 ---
 
 ## 1. 技术选型
 
-| 层级     | 技术             |
-| -------- | ---------------- |
-| 运行时   | Node.js 18+      |
-| 后端框架 | Express          |
-| 前端框架 | React 18         |
+| 层级     | 技术                         |
+| -------- | ---------------------------- |
+| 运行时   | Node.js 18+                  |
+| 后端框架 | Express                      |
+| 前端框架 | React 18                     |
 | UI 库    | Bootstrap 5 + Bootstrap Icons |
-| 构建工具 | Vite             |
-| ZIP 打包 | archiver         |
-| 解压     | tar + unzipper   |
-| 认证     | Token 会话（crypto 随机数） |
-| 存储     | 文件系统（JSON）  |
+| 构建工具 | Vite                         |
+| ZIP 打包 | archiver                     |
+| 解压     | tar + unzipper               |
+| 认证     | Token 会话 + bcrypt 密码哈希  |
+| 安全     | helmet / express-rate-limit  |
+| 存储     | 文件系统（JSON）              |
 
 ---
 
 ## 2. 目录结构
 
 ```
-├── server.js                  # Express 后端
-├── client/                    # React 前端
-│   ├── index.html
+├── server.js                    # Express 后端（全部 API）
+├── client/                      # React 前端
 │   └── src/
-│       ├── main.jsx
-│       ├── App.jsx            # 根组件（认证、侧边栏、Tab 系统）
-│       ├── admin.css          # 管理后台布局样式
-│       ├── frp-dashboard.css  # 远程管理页 FRP 风格
-│       ├── api.js             # API 封装（含认证 token）
+│       ├── App.jsx              # 根组件（认证、侧边栏、Tab）
+│       ├── admin.css            # 管理后台样式
+│       ├── frp-dashboard.css    # 远程管理 FRP 风格
+│       ├── api.js               # API 封装（自动附加 Token）
 │       ├── pages/
-│       │   ├── LoginPage.jsx
-│       │   ├── HomePage.jsx
-│       │   ├── BinaryManager.jsx
-│       │   ├── ServerConfig.jsx
-│       │   ├── ClientConfig.jsx
-│       │   ├── RemoteManager.jsx
+│       │   ├── LoginPage.jsx / HomePage.jsx
+│       │   ├── BinaryManager.jsx / ServerConfig.jsx
+│       │   ├── ClientConfig.jsx / RemoteManager.jsx
 │       │   └── UserManager.jsx
 │       └── components/
-│           ├── ToastContext.jsx
-│           ├── ConfigLayout.jsx
-│           ├── EmptyState.jsx
-│           └── ConfirmModal.jsx
-├── frp_bin/<version>/<os_arch>/ # 二进制存储
+│           ├── ToastContext.jsx / ConfirmModal.jsx
+│           ├── EmptyState.jsx / ConfigLayout.jsx
+├── frp_bin/<version>/<os_arch>/ # 多平台二进制存储
 ├── config_schemas/server/       # 服务端方案
 ├── config_schemas/client/       # 客户端方案
 ├── packages/                    # 临时打包
-├── users.json                   # 系统用户
-├── package.json
-├── vite.config.js
+├── users.json                   # 用户数据（bcrypt 哈希）
 └── docs/
 ```
 
 ---
 
-## 3. 数据流
+## 3. API 设计
 
-```
-[登录] → token 存 localStorage，所有 API 请求带 Authorization header
-[上传] → 解析 frp_<ver>_<os>_<arch>.tar.gz → frp_bin/<ver>/<os_arch>/
-[配置] → 表单 → POST /api/server(generate → TOML 预览 → 保存方案)
-[打包] → POST /api/server/package {ini, version, platform} → ZIP 流下载
-[远程] → 从 config_schemas/server 读取连接 → proxy FRP Dashboard API
-```
+### 3.1 认证
+| 接口               | 方法 | 说明                    |
+| ------------------ | ---- | ----------------------- |
+| `/api/auth/login`  | POST | 登录，返回 Token        |
+| `/api/auth/logout` | POST | 退出                    |
+| `/api/auth/me`     | GET  | 验证 Token              |
 
----
+所有 `/api/*`（除上述和 `/api/health`）需 Bearer Token + 角色授权。
 
-## 4. API 设计
+### 3.2 程序包
+| 接口                            | 方法   | 说明               |
+| ------------------------------- | ------ | ------------------ |
+| `/api/binary/upload`            | POST   | multipart 上传      |
+| `/api/binary/list`              | GET    | 版本+平台列表       |
+| `/api/binary/<version>/default` | PUT    | 设默认             |
+| `/api/binary/<version>`         | DELETE | 删除版本或单个平台  |
 
-### 4.1 认证
+### 3.3 配置生成
+| 接口                      | 方法 | 说明               |
+| ------------------------- | ---- | ------------------ |
+| `/api/server/generate`    | POST | 生成 frps.toml      |
+| `/api/client/generate`    | POST | 生成 frpc.toml      |
+| `/api/server/package`     | POST | 打包服务端 ZIP      |
+| `/api/client/package`     | POST | 打包客户端 ZIP      |
 
-| 接口                | 方法 | 说明                       |
-| ------------------- | ---- | -------------------------- |
-| `/api/auth/login`   | POST | 登录，返回 token（24h 有效）|
-| `/api/auth/logout`  | POST | 退出，销毁 session          |
-| `/api/auth/me`      | GET  | 验证 token，返回用户信息    |
+### 3.4 方案管理
+| 接口                      | 方法   | 说明    |
+| ------------------------- | ------ | ------- |
+| `/api/server/schema/*`    | CRUD   | 服务端  |
+| `/api/client/schema/*`    | CRUD   | 客户端  |
 
-所有 `/api/*` 路径（除上述和 `/api/health`）均需 Bearer Token 认证。
+### 3.5 远程管理（代理 FRP Dashboard API）
+| 接口                                        | 方法 | 说明                          |
+| ------------------------------------------- | ---- | ----------------------------- |
+| `/api/connections`                          | GET  | 从服务端方案自动读取连接        |
+| `/api/connections/<id>/serverinfo`          | GET  | → FRP /api/serverinfo          |
+| `/api/connections/<id>/proxies`             | GET  | → FRP 聚合 6 种代理类型        |
+| `/api/connections/<id>/proxy/<type>/<name>` | GET  | → FRP 单个代理详情             |
+| `/api/connections/<id>/traffic/<name>`      | GET  | → FRP /api/traffic/:name       |
+| `/api/connections/<id>/clients`             | GET  | → FRP /api/clients             |
+| `/api/connections/<id>/clients/<key>`       | GET  | → FRP 客户端详情               |
+| `/api/connections/<id>/clients/<key>/proxies` | GET | 该客户端的代理列表             |
+| `/api/connections/<id>/reload`              | GET  | → FRP /api/reload              |
 
-### 4.2 程序包管理
-
-| 接口                            | 方法   | 说明                     |
-| ------------------------------- | ------ | ------------------------ |
-| `/api/binary/upload`            | POST   | multipart 上传，自动识别平台 |
-| `/api/binary/list`              | GET    | 版本+平台列表              |
-| `/api/binary/<version>/default` | PUT    | 设为默认版本              |
-| `/api/binary/<version>`         | DELETE | 删除版本（?platform=删单个）|
-
-### 4.3 配置生成与打包
-
-| 接口                      | 方法 | 说明                        |
-| ------------------------- | ---- | --------------------------- |
-| `/api/server/generate`    | POST | 生成 frps.toml（官方格式）   |
-| `/api/client/generate`    | POST | 生成 frpc.toml + [[proxies]] |
-| `/api/server/package`     | POST | 打包（需 version + platform） |
-| `/api/client/package`     | POST | 打包（需 version + platform） |
-
-### 4.4 方案管理
-
-| 接口                            | 方法   | 说明     |
-| ------------------------------- | ------ | -------- |
-| `/api/server/schema`            | GET    | 列出方案 |
-| `/api/server/schema/<name>`     | GET    | 加载方案 |
-| `/api/server/schema/<name>`     | POST   | 保存方案 |
-| `/api/server/schema/<name>`     | DELETE | 删除方案 |
-| `/api/client/schema/*`          | 同上   | 客户端   |
-
-### 4.5 远程管理
-
-| 接口                                   | 方法 | 说明                            |
-| -------------------------------------- | ---- | ------------------------------- |
-| `/api/connections`                     | GET  | 列出可连接的服务端（从方案读取） |
-| `/api/connections/<id>`                | DELETE | 删除连接（即删除方案）        |
-| `/api/connections/<id>/serverinfo`     | GET  | proxy → FRP /api/serverinfo     |
-| `/api/connections/<id>/proxies`        | GET  | proxy → FRP /api/proxy/6种类型   |
-| `/api/connections/<id>/clients`        | GET  | proxy → FRP /api/clients        |
-| `/api/connections/<id>/clients/<key>`  | GET  | proxy → FRP 客户端详情          |
-| `/api/connections/<id>/reload`         | GET  | proxy → FRP /api/reload         |
-
-### 4.6 用户管理
-
-| 接口                    | 方法   | 说明       |
-| ----------------------- | ------ | ---------- |
-| `/api/users`            | GET    | 用户列表   |
-| `/api/users`            | POST   | 添加/更新  |
-| `/api/users/<username>` | DELETE | 删除用户   |
+### 3.6 用户管理
+| 接口                  | 方法   | 说明     |
+| --------------------- | ------ | -------- |
+| `/api/users`          | GET    | 用户列表 |
+| `/api/users`          | POST   | 添加/更新 |
+| `/api/users/<name>`   | DELETE | 删除     |
 
 ---
 
-## 5. TOML 配置生成规则
+## 4. 安全架构
 
-兼容 FRP v0.52+，使用 camelCase + dot-notation：
-
-- `bindPort`、`vhostHTTPPort`、`subDomainHost`
-- `webServer.port`、`webServer.user`、`webServer.password`
-- `auth.method`、`auth.token`
-- `log.to`、`log.level`
-- 代理：`[[proxies]]` + `localIP`、`localPort`、`remotePort`、`transport.useEncryption` 等
-- 端口号不加引号，字符串加引号，布尔值 true/false
+- **路径穿越防护**：`safePath()` + `validateName()` 校验所有用户输入的文件路径
+- **密码哈希**：bcrypt 12 轮加密存储，默认密码 admin/admin
+- **角色授权**：`requireRole('admin')` 中间件保护管理接口
+- **安全头**：`helmet` 提供 X-Frame-Options / X-Content-Type-Options 等
+- **频率限制**：登录接口 15 分钟 10 次上限
+- **CORS**：限制为开发/生产域名
 
 ---
 
-## 6. Vite 开发代理
+## 5. TOML 生成规则
 
-```js
-// vite.config.js
-export default {
-  plugins: [react()],
-  root: 'client',
-  build: { outDir: 'client/dist' },
-  server: { port: 5173, proxy: { '/api': 'http://localhost:3001' } },
-};
-```
+FRP v0.52+ 官方格式，camelCase + dot-notation：
+- `bindPort`、`webServer.port`、`auth.token`、`log.to`
+- 代理 `[[proxies]]`：`localIP`、`localPort`、`transport.useEncryption`
+- `customDomains` 始终为数组格式
+- `subdomain` 继承服务端 `subdomainHost`
